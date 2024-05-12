@@ -778,7 +778,7 @@ void packetmath_test_IEEE_corner_cases(const RefFunctorT& ref_fun, const Functor
   }
 
   // Test for subnormals.
-  if (Cond && std::numeric_limits<Scalar>::has_denorm == std::denorm_present && !EIGEN_ARCH_ARM) {
+  if (Cond && !EIGEN_ARCH_ARM) {
     for (int scale = 1; scale < 5; ++scale) {
       // When EIGEN_FAST_MATH is 1 we relax the conditions slightly, and allow the function
       // to return the same value for subnormals as the reference would return for zero with
@@ -1099,16 +1099,14 @@ void packetmath_real() {
 
       // Note: 32-bit arm always flushes denorms to zero.
 #if !EIGEN_ARCH_ARM
-      if (std::numeric_limits<Scalar>::has_denorm == std::denorm_present) {
-        data1[0] = std::numeric_limits<Scalar>::denorm_min();
-        data1[1] = -std::numeric_limits<Scalar>::denorm_min();
-        h.store(data2, internal::plog(h.load(data1)));
-        // TODO(rmlarsen): Re-enable for bfloat16.
-        if (!internal::is_same<Scalar, bfloat16>::value) {
-          VERIFY_IS_APPROX(std::log(std::numeric_limits<Scalar>::denorm_min()), data2[0]);
-        }
-        VERIFY((numext::isnan)(data2[1]));
+      data1[0] = std::numeric_limits<Scalar>::denorm_min();
+      data1[1] = -std::numeric_limits<Scalar>::denorm_min();
+      h.store(data2, internal::plog(h.load(data1)));
+      // TODO(rmlarsen): Re-enable for bfloat16.
+      if (!internal::is_same<Scalar, bfloat16>::value) {
+        VERIFY_IS_APPROX(std::log(std::numeric_limits<Scalar>::denorm_min()), data2[0]);
       }
+      VERIFY((numext::isnan)(data2[1]));
 #endif
 
       data1[0] = Scalar(-1.0f);
