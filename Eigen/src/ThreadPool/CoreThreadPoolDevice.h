@@ -58,8 +58,7 @@ struct CoreThreadPoolDevice {
       idealThreads = numext::maxi(idealThreads, 1.0f);
       actualThreads = numext::mini(actualThreads, static_cast<int>(idealThreads));
     }
-    int maxLevel = numext::log2(actualThreads);
-    if ((actualThreads & (actualThreads - 1)) != 0) maxLevel++;
+    int maxLevel = internal::log2_ceil(actualThreads);
     return maxLevel;
   }
 
@@ -78,7 +77,9 @@ struct CoreThreadPoolDevice {
       Index size = end - begin;
       eigen_assert(size % PacketSize == 0 && "this function assumes size is a multiple of PacketSize");
       Index mid = begin + numext::round_down(size >> 1, PacketSize);
-      Task right = [=, this, &f, &barrier]() { parallelForImpl<UnaryFunctor, PacketSize>(mid, end, f, barrier, level); };
+      Task right = [=, this, &f, &barrier]() {
+        parallelForImpl<UnaryFunctor, PacketSize>(mid, end, f, barrier, level);
+      };
       m_pool.Schedule(std::move(right));
       end = mid;
     }
@@ -105,7 +106,7 @@ struct CoreThreadPoolDevice {
         eigen_assert(innerSize % PacketSize == 0 && "this function assumes innerSize is a multiple of PacketSize");
         Index innerMid = innerBegin + numext::round_down(innerSize >> 1, PacketSize);
         Task right = [=, this, &f, &barrier]() {
-          parallelForImpl<BinaryFunctor, PacketSize>(outerBegin, innerMid, innerEnd, f, barrier, level);
+          parallelForImpl<BinaryFunctor, PacketSize>(outerBegin, outerEnd, innerMid, innerEnd, f, barrier, level);
         };
         m_pool.Schedule(std::move(right));
         innerEnd = innerMid;
@@ -113,24 +114,6 @@ struct CoreThreadPoolDevice {
     }
     for (Index outer = outerBegin; outer < outerEnd; outer++)
       for (Index inner = innerBegin; inner < innerEnd; inner += PacketSize) f(outer, inner);
-    barrier.Notify();
-  }
-
-  template <typename BinaryFunctor, int PacketSize>
-  EIGEN_DEVICE_FUNC EIGEN_PARALLEL_FOR_INLINE void parallelForImpl(Index outer, Index innerBegin, Index innerEnd,
-                                                                   BinaryFunctor& f, Barrier& barrier, int level) {
-    while (level > 0) {
-      level--;
-      Index innerSize = innerEnd - innerBegin;
-      eigen_assert(innerSize % PacketSize == 0 && "this function assumes innerSize is a multiple of PacketSize");
-      Index innerMid = innerBegin + numext::round_down(innerSize >> 1, PacketSize);
-      Task right = [=, this, &f, &barrier]() {
-        parallelForImpl<BinaryFunctor, PacketSize>(outer, innerMid, innerEnd, f, barrier, level);
-      };
-      m_pool.Schedule(std::move(right));
-      innerEnd = innerMid;
-    }
-    for (Index inner = innerBegin; inner < innerEnd; inner += PacketSize) f(outer, inner);
     barrier.Notify();
   }
 
@@ -153,8 +136,7 @@ struct CoreThreadPoolDevice {
     Index size = outerSize * innerSize;
     int maxLevel = calculateLevels<PacketSize>(size, cost);
     Barrier barrier(1 << maxLevel);
-    parallelForImpl<BinaryFunctor, PacketSize>(outerBegin, outerEnd, innerBegin, innerEnd, f, barrier,
-                                               maxLevel);
+    parallelForImpl<BinaryFunctor, PacketSize>(outerBegin, outerEnd, innerBegin, innerEnd, f, barrier, maxLevel);
     barrier.Wait();
   }
 
