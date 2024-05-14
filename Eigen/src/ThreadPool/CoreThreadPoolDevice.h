@@ -71,13 +71,14 @@ struct CoreThreadPoolDevice {
 #endif
 
   template <typename UnaryFunctor, int PacketSize>
-  EIGEN_DEVICE_FUNC EIGEN_PARALLEL_FOR_INLINE void parallelForImpl(Index begin, Index end, UnaryFunctor f,
+  EIGEN_DEVICE_FUNC EIGEN_PARALLEL_FOR_INLINE void parallelForImpl(Index begin, Index end, UnaryFunctor& f,
                                                                    Barrier& barrier, int level) {
-    while (level--) {
+    while (level > 0) {
+      level--;
       Index size = end - begin;
       eigen_assert(size % PacketSize == 0 && "this function assumes size is a multiple of PacketSize");
       Index mid = begin + numext::round_down(size >> 1, PacketSize);
-      Task right = [=, this, &barrier]() { parallelForImpl<UnaryFunctor, PacketSize>(mid, end, f, barrier, level); };
+      Task right = [=, this, &f, &barrier]() { parallelForImpl<UnaryFunctor, PacketSize>(mid, end, f, barrier, level); };
       m_pool.Schedule(std::move(right));
       end = mid;
     }
@@ -87,13 +88,14 @@ struct CoreThreadPoolDevice {
 
   template <typename BinaryFunctor, int PacketSize>
   EIGEN_DEVICE_FUNC EIGEN_PARALLEL_FOR_INLINE void parallelForImpl(Index outerBegin, Index outerEnd, Index innerBegin,
-                                                                   Index innerEnd, BinaryFunctor f, Barrier& barrier,
+                                                                   Index innerEnd, BinaryFunctor& f, Barrier& barrier,
                                                                    int level) {
-    while (level--) {
+    while (level > 0) {
+      level--;
       Index outerSize = outerEnd - outerBegin;
       if (outerSize > 1) {
         Index outerMid = outerBegin + (outerSize >> 1);
-        Task right = [=, this, &barrier]() {
+        Task right = [=, this, &f, &barrier]() {
           parallelForImpl<BinaryFunctor, PacketSize>(outerMid, outerEnd, innerBegin, innerEnd, f, barrier, level);
         };
         m_pool.Schedule(std::move(right));
@@ -102,8 +104,8 @@ struct CoreThreadPoolDevice {
         Index innerSize = innerEnd - innerBegin;
         eigen_assert(innerSize % PacketSize == 0 && "this function assumes innerSize is a multiple of PacketSize");
         Index innerMid = innerBegin + numext::round_down(innerSize >> 1, PacketSize);
-        Task right = [=, this, &barrier]() {
-          parallelForImpl<BinaryFunctor, PacketSize>(outerBegin, outerEnd, innerMid, innerEnd, f, barrier, level);
+        Task right = [=, this, &f, &barrier]() {
+          parallelForImpl<BinaryFunctor, PacketSize>(outerBegin, innerMid, innerEnd, f, barrier, level);
         };
         m_pool.Schedule(std::move(right));
         innerEnd = innerMid;
@@ -114,26 +116,44 @@ struct CoreThreadPoolDevice {
     barrier.Notify();
   }
 
+  template <typename BinaryFunctor, int PacketSize>
+  EIGEN_DEVICE_FUNC EIGEN_PARALLEL_FOR_INLINE void parallelForImpl(Index outer, Index innerBegin, Index innerEnd,
+                                                                   BinaryFunctor& f, Barrier& barrier, int level) {
+    while (level > 0) {
+      level--;
+      Index innerSize = innerEnd - innerBegin;
+      eigen_assert(innerSize % PacketSize == 0 && "this function assumes innerSize is a multiple of PacketSize");
+      Index innerMid = innerBegin + numext::round_down(innerSize >> 1, PacketSize);
+      Task right = [=, this, &f, &barrier]() {
+        parallelForImpl<BinaryFunctor, PacketSize>(outer, innerMid, innerEnd, f, barrier, level);
+      };
+      m_pool.Schedule(std::move(right));
+      innerEnd = innerMid;
+    }
+    for (Index inner = innerBegin; inner < innerEnd; inner += PacketSize) f(outer, inner);
+    barrier.Notify();
+  }
+
 #undef EIGEN_PARALLEL_FOR_INLINE
 
   template <typename UnaryFunctor, int PacketSize>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void parallelFor(Index begin, Index end, UnaryFunctor f, float cost) {
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void parallelFor(Index begin, Index end, UnaryFunctor& f, float cost) {
     Index size = end - begin;
     int maxLevel = calculateLevels<PacketSize>(size, cost);
     Barrier barrier(1 << maxLevel);
-    parallelForImpl<UnaryFunctor, PacketSize>(begin, end, std::move(f), barrier, maxLevel);
+    parallelForImpl<UnaryFunctor, PacketSize>(begin, end, f, barrier, maxLevel);
     barrier.Wait();
   }
 
   template <typename BinaryFunctor, int PacketSize>
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void parallelFor(Index outerBegin, Index outerEnd, Index innerBegin,
-                                                         Index innerEnd, BinaryFunctor f, float cost) {
+                                                         Index innerEnd, BinaryFunctor& f, float cost) {
     Index outerSize = outerEnd - outerBegin;
     Index innerSize = innerEnd - innerBegin;
     Index size = outerSize * innerSize;
     int maxLevel = calculateLevels<PacketSize>(size, cost);
     Barrier barrier(1 << maxLevel);
-    parallelForImpl<BinaryFunctor, PacketSize>(outerBegin, outerEnd, innerBegin, innerEnd, std::move(f), barrier,
+    parallelForImpl<BinaryFunctor, PacketSize>(outerBegin, outerEnd, innerBegin, innerEnd, f, barrier,
                                                maxLevel);
     barrier.Wait();
   }
@@ -172,7 +192,7 @@ struct dense_assignment_loop_with_device<Kernel, CoreThreadPoolDevice, DefaultTr
     const Index outerSize = kernel.outerSize();
     constexpr float cost = static_cast<float>(XprEvaluationCost);
     AssignmentFunctor functor(kernel);
-    device.template parallelFor<AssignmentFunctor, 1>(0, outerSize, 0, innerSize, std::move(functor), cost);
+    device.template parallelFor<AssignmentFunctor, 1>(0, outerSize, 0, innerSize, functor, cost);
   }
 };
 
@@ -242,13 +262,17 @@ struct dense_assignment_loop_with_device<Kernel, CoreThreadPoolDevice, SliceVect
   using Scalar = typename Kernel::Scalar;
   using PacketType = typename Kernel::PacketType;
   static constexpr Index XprEvaluationCost = cost_helper<Kernel>::Cost, PacketSize = unpacket_traits<PacketType>::size;
-  struct AssignmentFunctor : public Kernel {
-    EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE AssignmentFunctor(Kernel& kernel) : Kernel(kernel) {}
+  struct PacketAssignmentFunctor : public Kernel {
+    EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE PacketAssignmentFunctor(Kernel& kernel) : Kernel(kernel) {}
+    EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void operator()(Index outer, Index inner) {
+      this->template assignPacketByOuterInner<Unaligned, Unaligned, PacketType>(outer, inner);
+    }
+  };
+  struct ScalarAssignmentFunctor : public Kernel {
+    EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE ScalarAssignmentFunctor(Kernel& kernel) : Kernel(kernel) {}
     EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void operator()(Index outer) {
       const Index innerSize = this->innerSize();
       const Index packetAccessSize = numext::round_down(innerSize, PacketSize);
-      for (Index inner = 0; inner < packetAccessSize; inner += PacketSize)
-        this->template assignPacketByOuterInner<Unaligned, Unaligned, PacketType>(outer, inner);
       for (Index inner = packetAccessSize; inner < innerSize; inner++) this->assignCoeffByOuterInner(outer, inner);
     }
   };
@@ -256,10 +280,13 @@ struct dense_assignment_loop_with_device<Kernel, CoreThreadPoolDevice, SliceVect
     const Index outerSize = kernel.outerSize();
     const Index innerSize = kernel.innerSize();
     const Index packetAccessSize = numext::round_down(innerSize, PacketSize);
-    const float cost = static_cast<float>(XprEvaluationCost) * static_cast<float>(packetAccessSize / PacketSize) +
-                       static_cast<float>(XprEvaluationCost) * static_cast<float>(innerSize - packetAccessSize);
-    AssignmentFunctor functor(kernel);
-    device.template parallelFor<AssignmentFunctor, 1>(0, outerSize, functor, cost);
+    constexpr float packetCost = static_cast<float>(XprEvaluationCost);
+    const float scalarCost = static_cast<float>(XprEvaluationCost) * static_cast<float>(innerSize - packetAccessSize);
+    PacketAssignmentFunctor packetFunctor(kernel);
+    ScalarAssignmentFunctor scalarFunctor(kernel);
+    device.template parallelFor<PacketAssignmentFunctor, PacketSize>(0, outerSize, 0, packetAccessSize, packetFunctor,
+                                                                     packetCost);
+    device.template parallelFor<ScalarAssignmentFunctor, 1>(0, outerSize, scalarFunctor, scalarCost);
   };
 };
 
