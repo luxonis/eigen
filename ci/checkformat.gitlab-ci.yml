@@ -9,4 +9,5 @@ checkformat:clangformat:
     - apt-get update -y
     - apt-get install -y --no-install-recommends git clang-format clang-format-17
   script:
-    - git clang-format-17 --diff --commit ${CI_MERGE_REQUEST_DIFF_BASE_SHA}
+    - ./scripts/format.sh
+    - git --no-pager diff --exit-code HEAD
