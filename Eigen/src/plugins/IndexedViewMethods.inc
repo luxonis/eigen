@@ -32,13 +32,13 @@ public:
 
 // non-const versions
 
- template <typename RowIndices, typename ColIndices>
- using IndexedViewType = typename internal::IndexedViewSelector<Derived, RowIndices, ColIndices>::ReturnType;
+template <typename RowIndices, typename ColIndices>
+using IndexedViewType = typename internal::IndexedViewSelector<Derived, RowIndices, ColIndices>::ReturnType;
 
- template <typename RowIndices, typename ColIndices, EnableOverload<RowIndices, ColIndices> = true>
- IndexedViewType<RowIndices, ColIndices> operator()(const RowIndices& rowIndices, const ColIndices& colIndices) {
-   return internal::IndexedViewSelector<Derived, RowIndices, ColIndices>::run(derived(), rowIndices, colIndices);
- }
+template <typename RowIndices, typename ColIndices, EnableOverload<RowIndices, ColIndices> = true>
+IndexedViewType<RowIndices, ColIndices> operator()(const RowIndices& rowIndices, const ColIndices& colIndices) {
+  return internal::IndexedViewSelector<Derived, RowIndices, ColIndices>::run(derived(), rowIndices, colIndices);
+}
 
 template <typename RowType, size_t RowSize, typename ColIndices, typename RowIndices = Array<RowType, RowSize, 1>,
           EnableOverload<RowIndices, ColIndices> = true>
