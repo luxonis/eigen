@@ -6,3 +6,6 @@ find . -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cu' -
 # Format main headers without extensions
 find Eigen -maxdepth 1 -type f | xargs -n 1 -P 0 clang-format -i
 find unsupported/Eigen -maxdepth 2 -type f -not -name '*.txt' | xargs -n 1 -P 0 clang-format -i
+
+# Format examples
+find doc/examples -type f -name '*.cpp.*' | xargs -n 1 -P 0 clang-format -i
